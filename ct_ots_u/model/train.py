@@ -126,6 +126,8 @@ def fit_branch_generator(
                     capture_diag=bool(log_diagnostics),
                     sinkhorn_backend=sink_backend,
                     sinkhorn_scaling=sinkhorn_scaling,
+                    num_iter_max=num_iter_max,
+                    stop_thr=stop_thr,
                     use_torch_compile=bool(use_torch_compile),
                     sinkhorn_minibatch=bool(sinkhorn_minibatch),
                     sinkhorn_batch_size=sinkhorn_batch_size,
@@ -739,6 +741,8 @@ def _fit_branch_generator_torch(
     capture_diag: bool,
     sinkhorn_backend: str,
     sinkhorn_scaling: float,
+    num_iter_max: int,
+    stop_thr: float,
     use_torch_compile: bool,
     sinkhorn_minibatch: bool,
     sinkhorn_batch_size: int | None,
@@ -870,6 +874,34 @@ def _fit_branch_generator_torch(
         )
         return None
 
+    pot_warned = False
+
+    def _pot_fallback(src: torch.Tensor, tgt: torch.Tensor, *, warn: bool = True) -> torch.Tensor:
+        nonlocal pot_warned
+        if warn and not pot_warned:
+            warnings.warn(
+                "GeomLoss evaluation failed; falling back to POT Sinkhorn divergence.",
+                RuntimeWarning,
+            )
+            pot_warned = True
+        value = _uot_losses.sinkhorn_divergence(
+            src.detach().cpu().numpy(),
+            tgt.detach().cpu().numpy(),
+            blur=reg,
+            backend="pot",
+            sinkhorn_backend=sinkhorn_backend,
+            scaling=sinkhorn_scaling,
+            num_iter_max=num_iter_max,
+            stop_thr=stop_thr,
+        )
+        return torch.as_tensor(value, device=src.device, dtype=src.dtype)
+
+    def _sinkhorn_loss(src: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
+        try:
+            return sinkhorn(src, tgt)
+        except Exception:
+            return _pot_fallback(src, tgt)
+
     def _select(tensor: torch.Tensor, idx: torch.Tensor | None) -> torch.Tensor:
         return tensor if idx is None else tensor.index_select(0, idx)
 
@@ -927,7 +959,7 @@ def _fit_branch_generator_torch(
             cache=exp_cache,
             L_override=L_proj,
         )
-        loss_transport = sinkhorn(Yhat, Xt_used)
+        loss_transport = _sinkhorn_loss(Yhat, Xt_used)
         loss_total = loss_transport
         if reg_nuc:
             loss_total = loss_total + reg_nuc * torch.linalg.matrix_norm(L_proj, ord='nuc')
@@ -993,7 +1025,7 @@ def _fit_branch_generator_torch(
                     cache=exp_cache,
                     L_override=L_tmp_proj,
                 )
-                loss_uot_dbg = sinkhorn(Yhat_dbg, Xt_t)
+                loss_uot_dbg = _sinkhorn_loss(Yhat_dbg, Xt_t)
                 jac_dbg = 0.0
                 if jac_penalty_weight > 0.0 and residual is not None:
                     with torch.enable_grad():
@@ -1051,7 +1083,7 @@ def _fit_branch_generator_torch(
             cache=exp_cache,
             L_override=swa_proj,
         )
-        loss_swa = sinkhorn(Yhat_swa, Xt_t)
+        loss_swa = _sinkhorn_loss(Yhat_swa, Xt_t)
         if reg_nuc:
             loss_swa = loss_swa + reg_nuc * torch.linalg.matrix_norm(swa_proj, ord='nuc')
         if use_soft_penalty:
