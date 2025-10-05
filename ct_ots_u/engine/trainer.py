@@ -171,9 +171,14 @@ class TransportTrainer:
             batch_size=self.config.batch_size,
             shuffle=True,
             drop_last=False,
+            collate_fn=TransportDataset.collate,
         )
         valid_loader = (
-            DataLoader(valid, batch_size=self.config.batch_size)
+            DataLoader(
+                valid,
+                batch_size=self.config.batch_size,
+                collate_fn=TransportDataset.collate,
+            )
             if valid is not None
             else None
         )
