@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import warnings
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -63,6 +63,12 @@ def fit_branch_generator(
     sinkhorn_scaling: float = 0.9,
     sinkhorn_minibatch: bool = False,
     sinkhorn_batch_size: int | None = None,
+    model: str = "linear",
+    K: int = 2,
+    residual_cfg: dict[str, Any] | None = None,
+    meta_cfg: dict[str, Any] | None = None,
+    rk: str = "rk2",
+    jac_penalty_weight: float = 0.0,
 ) -> Array | tuple[Array, dict[str, float]]:
     """Fit branch-specific generator using POT/GeomLoss objective."""
 
@@ -123,6 +129,12 @@ def fit_branch_generator(
                     use_torch_compile=bool(use_torch_compile),
                     sinkhorn_minibatch=bool(sinkhorn_minibatch),
                     sinkhorn_batch_size=sinkhorn_batch_size,
+                    model=model,
+                    K=K,
+                    residual_cfg=residual_cfg,
+                    meta_cfg=meta_cfg,
+                    rk=rk,
+                    jac_penalty_weight=float(jac_penalty_weight),
                 )
                 if result is not None:
                     L_torch, diag_torch = result
@@ -700,9 +712,6 @@ def _torch_soft_stability_penalty(L: "torch.Tensor", alpha: float, lambda_stab: 
     return lambda_stab * violation.square()
 
 
-def _torch_pushforward(X: "torch.Tensor", L: "torch.Tensor", tau: float) -> "torch.Tensor":
-    exp_L = torch.matrix_exp(L * tau)
-    return (exp_L @ X.T).T
 
 
 def _fit_branch_generator_torch(
@@ -733,14 +742,26 @@ def _fit_branch_generator_torch(
     use_torch_compile: bool,
     sinkhorn_minibatch: bool,
     sinkhorn_batch_size: int | None,
+    model: str,
+    K: int,
+    residual_cfg: dict[str, Any] | None,
+    meta_cfg: dict[str, Any] | None,
+    rk: str,
+    jac_penalty_weight: float,
 ) -> tuple[Array, dict[str, float]] | None:
     if not HAS_TORCH:
         return None
     try:
-        from geomloss import SamplesLoss
+        from geomloss import SamplesLoss  # noqa: F401
     except ImportError:  # pragma: no cover - optional dependency
         warnings.warn('geomloss is required for PyTorch optimisation; falling back to NumPy implementation')
         return None
+
+    from .modules.stable_linear import StableLinear
+    from .modules.residuals import ResidualNet
+    from .modules.meta_head import MetaHead
+    from ..transport.pushforward import pushforward_torch
+    from .ode.jacobian_penalty import approx_jacobian_spectral_norm
 
     if Xs.shape[0] == 0 or Xt.shape[0] == 0:
         return None
@@ -748,8 +769,10 @@ def _fit_branch_generator_torch(
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     max_samples = int(os.environ.get('CT_OTS_MAX_TRAIN_SAMPLES', 80))
+    src_sample_indices: np.ndarray | None = None
     if Xs.shape[0] > max_samples:
-        Xs = Xs[rng.choice(Xs.shape[0], max_samples, replace=False)]
+        src_sample_indices = rng.choice(Xs.shape[0], max_samples, replace=False)
+        Xs = Xs[src_sample_indices]
     if Xt.shape[0] > max_samples:
         Xt = Xt[rng.choice(Xt.shape[0], max_samples, replace=False)]
 
@@ -765,15 +788,60 @@ def _fit_branch_generator_torch(
     Xs_t = torch.as_tensor(Xs, dtype=dtype, device=requested_device)
     Xt_t = torch.as_tensor(Xt, dtype=dtype, device=requested_device)
 
-    d = Xs.shape[1]
-    r = rank or min(32, d)
+    d = Xs_t.shape[1]
+    base_rank = rank or min(32, d)
+    if meta_cfg and 'rank' in meta_cfg:
+        base_rank = int(meta_cfg.get('rank', base_rank))
+    r = max(1, int(base_rank))
 
-    U = torch.randn(d, r, device=requested_device, dtype=dtype) * 0.01
-    V = torch.randn(d, r, device=requested_device, dtype=dtype) * 0.01
-    U.requires_grad_(True)
-    V.requires_grad_(True)
+    gamma_init = abs(float(stable_margin)) if stable_margin is not None else abs(float(alpha))
+    if gamma_init <= 0:
+        gamma_init = 1e-3
 
-    optimizer = torch.optim.Adam([U, V], lr=lr)
+    flow_mode = (model or 'linear').lower()
+    if flow_mode not in {'linear', 'exp_rnn', 'ode'}:
+        raise ValueError(f"Unsupported model '{model}'")
+
+    L_module = StableLinear(d, r=r, gamma_init=gamma_init, device=requested_device, dtype=dtype)
+    parameters: list[torch.nn.Parameter] = list(L_module.parameters())
+
+    residual = None
+    if flow_mode in {'exp_rnn', 'ode'}:
+        rcfg: dict[str, Any] = {'hidden': 128, 'depth': 2, 'lipschitz_scale': 1.0, 'activation': 'relu'}
+        if residual_cfg:
+            rcfg.update(residual_cfg)
+        residual = ResidualNet(d, **rcfg).to(device=requested_device, dtype=dtype)
+        parameters += list(residual.parameters())
+
+    meta_head = None
+    meta_context = None
+    meta_aggregate = 'mean'
+    if meta_cfg:
+        meta_aggregate = str(meta_cfg.get('aggregate', 'mean')).lower()
+        context = meta_cfg.get('context')
+        if context is None:
+            raise ValueError("meta_cfg requires a 'context' entry")
+        if src_sample_indices is not None:
+            if isinstance(context, torch.Tensor):
+                index_tensor = torch.as_tensor(
+                    src_sample_indices,
+                    device=context.device if context.device.type != 'meta' else 'cpu',
+                    dtype=torch.long,
+                )
+                context = context.index_select(0, index_tensor)
+            else:
+                context = np.asarray(context)[src_sample_indices]
+        if isinstance(context, torch.Tensor):
+            meta_context = context.to(device=requested_device, dtype=dtype)
+        else:
+            meta_context = torch.as_tensor(context, device=requested_device, dtype=dtype)
+        if meta_context.shape[0] != Xs_t.shape[0]:
+            raise ValueError('meta context must align with source samples')
+        context_dim = int(meta_context.shape[1])
+        meta_head = MetaHead(context_dim, d, r).to(device=requested_device, dtype=dtype)
+        parameters += list(meta_head.parameters())
+
+    optimizer = torch.optim.AdamW(parameters, lr=lr, amsgrad=True)
 
     attempts = _uot_losses._geomloss_candidates(sinkhorn_backend, sinkhorn_scaling)
     sinkhorn = None
@@ -802,29 +870,80 @@ def _fit_branch_generator_torch(
         )
         return None
 
-    # Define differentiable loss function; support optional minibatch indices
-    def _loss_fn(U_mat: "torch.Tensor", V_mat: "torch.Tensor", idx_s: "torch.Tensor | None" = None, idx_t: "torch.Tensor | None" = None) -> "torch.Tensor":
-        L_raw = U_mat @ V_mat.T
+    def _select(tensor: torch.Tensor, idx: torch.Tensor | None) -> torch.Tensor:
+        return tensor if idx is None else tensor.index_select(0, idx)
+
+    def _meta_overrides(idx: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None:
+        if meta_head is None or meta_context is None:
+            return None
+        context_batch = _select(meta_context, idx)
+        U_b, V_b, W_b, logg_b = meta_head(context_batch)
+        if meta_aggregate == 'mean':
+            U = U_b.mean(dim=0)
+            V = V_b.mean(dim=0)
+            W = W_b.mean(dim=0)
+            logg = logg_b.mean(dim=0)
+        elif meta_aggregate == 'first':
+            U = U_b[0]
+            V = V_b[0]
+            W = W_b[0]
+            logg = logg_b[0]
+        else:
+            raise ValueError(f"Unsupported meta aggregate '{meta_aggregate}'")
+        return U, V, W, logg
+
+    def _make_L(idx: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
+        overrides = _meta_overrides(idx)
+        L_raw = L_module(overrides)
         L_stable = _torch_project_stable(L_raw, alpha)
-        L_proj, _ = _torch_project_to_stable(L_stable, stable_margin, soft_weight)
-        Xs_used = Xs_t if idx_s is None else Xs_t.index_select(0, idx_s)
-        Xt_used = Xt_t if idx_t is None else Xt_t.index_select(0, idx_t)
-        Yhat = _torch_pushforward(Xs_used, L_proj, tau)
+        L_proj, diag = _torch_project_to_stable(L_stable, stable_margin, soft_weight)
+        return L_raw, L_proj, diag
+
+    alpha_penalty = abs(float(stable_margin)) if stable_margin is not None else abs(float(alpha))
+
+    def _jacobian_penalty(batch: torch.Tensor) -> torch.Tensor:
+        if jac_penalty_weight <= 0.0 or residual is None:
+            return torch.zeros((), device=batch.device, dtype=batch.dtype)
+        stride = max(1, batch.shape[0] // 8)
+        sample = batch[::stride] if stride > 0 else batch
+        if sample.shape[0] == 0:
+            sample = batch[:1]
+        return jac_penalty_weight * approx_jacobian_spectral_norm(residual, sample, iters=1)
+
+    exp_cache: Dict[object, torch.Tensor] = {}
+
+    def _loss_fn(idx_s: torch.Tensor | None = None, idx_t: torch.Tensor | None = None) -> torch.Tensor:
+        Xs_used = _select(Xs_t, idx_s)
+        Xt_used = _select(Xt_t, idx_t)
+        L_raw, L_proj, _ = _make_L(idx_s)
+        Yhat = pushforward_torch(
+            Xs_used,
+            L_module,
+            tau,
+            mode=flow_mode,
+            residual=residual,
+            K=K,
+            rk=rk,
+            cache=exp_cache,
+            L_override=L_proj,
+        )
         loss_transport = sinkhorn(Yhat, Xt_used)
         loss_total = loss_transport
         if reg_nuc:
             loss_total = loss_total + reg_nuc * torch.linalg.matrix_norm(L_proj, ord='nuc')
         if use_soft_penalty:
-            alpha_penalty_local = abs(float(stable_margin)) if stable_margin is not None else abs(float(alpha))
-            loss_total = loss_total + _torch_soft_stability_penalty(L_raw, alpha_penalty_local, lambda_soft)
+            loss_total = loss_total + _torch_soft_stability_penalty(L_raw, alpha_penalty, lambda_soft)
+        if jac_penalty_weight > 0.0 and residual is not None:
+            loss_total = loss_total + _jacobian_penalty(Xs_used)
         return loss_total
 
     compiled_loss = _loss_fn
     if use_torch_compile and hasattr(torch, "compile"):
         try:  # pragma: no cover - optional optimisation path
             compiled_loss = torch.compile(_loss_fn, mode="reduce-overhead")  # type: ignore[attr-defined]
-        except Exception as exc:  # fallback silently if compile unsupported
+        except Exception as exc:  # pragma: no cover - runtime dependent
             warnings.warn(f"torch.compile unavailable or failed ({exc!r}); continuing without compilation")
+
     best_loss = torch.tensor(float('inf'), device=requested_device)
     best_L: torch.Tensor | None = None
     best_diag: dict[str, float] | None = None
@@ -842,7 +961,6 @@ def _fit_branch_generator_torch(
             return float(swa_lr * 0.5 * (1.0 + np.cos(np.pi * progress)))
         return float(swa_lr)
 
-    alpha_penalty = abs(float(stable_margin)) if stable_margin is not None else abs(float(alpha))
     margin_value = 0.0 if stable_margin is None else float(stable_margin)
 
     for step_idx in range(steps):
@@ -854,20 +972,36 @@ def _fit_branch_generator_torch(
                 idx_s = torch.randint(0, int(Xs_t.shape[0]), (bs,), device=requested_device)
                 idx_t = torch.randint(0, int(Xt_t.shape[0]), (bs,), device=requested_device)
         try:
-            loss_total = compiled_loss(U, V, idx_s, idx_t)
-        except Exception as exc:  # pragma: no cover - fallback if runtime compile fails mid-run
+            loss_total = compiled_loss(idx_s, idx_t)
+        except Exception as exc:  # pragma: no cover - runtime dependent
             warnings.warn(f"torch.compile execution failed ({exc!r}); disabling compilation for remaining steps")
             compiled_loss = _loss_fn
-            loss_total = compiled_loss(U, V, idx_s, idx_t)
-        # Recover some diagnostics for logging (without graph retention)
+            loss_total = compiled_loss(idx_s, idx_t)
+
         with torch.no_grad():
-            L_tmp = U @ V.T
-            L_tmp = _torch_project_stable(L_tmp, alpha)
-            L_tmp, diag = _torch_project_to_stable(L_tmp, stable_margin, soft_weight)
+            L_tmp_raw, L_tmp_proj, diag = _make_L(None)
             loss_uot_dbg = None
             if capture_diag:
-                Yhat_dbg = _torch_pushforward(Xs_t, L_tmp, tau)
+                Yhat_dbg = pushforward_torch(
+                    Xs_t,
+                    L_module,
+                    tau,
+                    mode=flow_mode,
+                    residual=residual,
+                    K=K,
+                    rk=rk,
+                    cache=exp_cache,
+                    L_override=L_tmp_proj,
+                )
                 loss_uot_dbg = sinkhorn(Yhat_dbg, Xt_t)
+                jac_dbg = 0.0
+                if jac_penalty_weight > 0.0 and residual is not None:
+                    with torch.enable_grad():
+                        sample = Xs_t[:: max(1, Xs_t.shape[0] // 8)][:32]
+                        jac_dbg = float((jac_penalty_weight * approx_jacobian_spectral_norm(residual, sample, iters=1)).detach().cpu())
+            else:
+                jac_dbg = 0.0
+
         loss_total.backward()
 
         in_swa = use_swa_phase and step_idx >= swa_start_step
@@ -879,31 +1013,51 @@ def _fit_branch_generator_torch(
         loss_value = float(loss_total.detach().cpu())
         if loss_value < float(best_loss.detach().cpu()) or best_L is None:
             best_loss = loss_total.detach()
-            best_L = L_tmp.detach().clone()
+            best_L = L_tmp_proj.detach().clone()
             if capture_diag:
                 diag.update({
                     'loss_uot': (float(loss_uot_dbg.detach().cpu()) if loss_uot_dbg is not None else loss_value),
                     'loss_total': loss_value,
+                    'mode': flow_mode,
+                    'K': float(K),
+                    'rk': rk,
+                    'jac_penalty_weight': float(jac_penalty_weight),
+                    'jac_penalty': float(jac_dbg),
+                    'meta_active': 1.0 if meta_head is not None else 0.0,
                 })
+                if residual is not None:
+                    diag['residual_scale'] = float(residual.scale.detach().cpu())
                 best_diag = diag.copy()
 
         if in_swa:
             if swa_sum is None:
-                swa_sum = L_tmp.detach().clone()
+                swa_sum = L_tmp_proj.detach().clone()
             else:
-                swa_sum = swa_sum + L_tmp.detach()
+                swa_sum = swa_sum + L_tmp_proj.detach()
             swa_count += 1
 
     if use_swa_phase and swa_count > 0 and swa_sum is not None:
         swa_avg = swa_sum / swa_count
         swa_stable = _torch_project_stable(swa_avg, alpha)
         swa_proj, _ = _torch_project_to_stable(swa_stable, stable_margin, soft_weight)
-        Yhat_swa = _torch_pushforward(Xs_t, swa_proj, tau)
+        Yhat_swa = pushforward_torch(
+            Xs_t,
+            L_module,
+            tau,
+            mode=flow_mode,
+            residual=residual,
+            K=K,
+            rk=rk,
+            cache=exp_cache,
+            L_override=swa_proj,
+        )
         loss_swa = sinkhorn(Yhat_swa, Xt_t)
         if reg_nuc:
             loss_swa = loss_swa + reg_nuc * torch.linalg.matrix_norm(swa_proj, ord='nuc')
         if use_soft_penalty:
             loss_swa = loss_swa + _torch_soft_stability_penalty(swa_avg, alpha_penalty, lambda_soft)
+        if jac_penalty_weight > 0.0 and residual is not None:
+            loss_swa = loss_swa + _jacobian_penalty(Xs_t)
         loss_swa_value = float(loss_swa.detach().cpu())
         if loss_swa_value <= float(best_loss.detach().cpu()):
             best_L = swa_proj.detach().clone()
@@ -912,7 +1066,14 @@ def _fit_branch_generator_torch(
                     'loss_uot': float(loss_swa.detach().cpu()),
                     'loss_total': loss_swa_value,
                     'swa_updates': float(swa_count),
+                    'mode': flow_mode,
+                    'K': float(K),
+                    'rk': rk,
+                    'jac_penalty_weight': float(jac_penalty_weight),
+                    'meta_active': 1.0 if meta_head is not None else 0.0,
                 }
+                if residual is not None:
+                    best_diag['residual_scale'] = float(residual.scale.detach().cpu())
 
     if best_L is None:
         return None
