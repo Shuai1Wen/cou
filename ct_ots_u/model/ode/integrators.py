@@ -37,8 +37,9 @@ def step_exp_rnn(
     Y = X
     exp_cache = cache if cache is not None else {}
     for _ in range(max(K, 1)):
-        Y = expm_apply(L, Y, dt, cache=exp_cache, key=cache_key)
-        Y = Y + dt * g(Y)
+        Y_prev = Y
+        Y_linear = expm_apply(L, Y_prev, dt, cache=exp_cache, key=cache_key)
+        Y = Y_linear + dt * g(Y_prev)
     return Y
 
 
