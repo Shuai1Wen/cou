@@ -152,21 +152,58 @@ class TransportDataset(Dataset[TransportBatch]):
         ``batch``) are detected automatically.
         """
 
-        arrays: dict[str, list[np.ndarray | Tensor]] = {"h0": [], "h1": [], "cond": []}
+        arrays: dict[str, list[Tensor]] = {"h0": [], "h1": [], "cond": []}
         optional_keys = {"dose", "group", "batch"}
-        optional: dict[str, list[np.ndarray | Tensor]] = {key: [] for key in optional_keys}
+        optional: dict[str, list[Optional[Tensor]]] = {
+            key: [] for key in optional_keys
+        }
+
+        def _ensure_leading_dim(value: np.ndarray | Tensor) -> Tensor:
+            tensor = torch.as_tensor(value)
+            if tensor.ndim == 0:
+                tensor = tensor.unsqueeze(0)
+            return tensor
+
+        sample_count = 0
         for sample in iterator:
+            sample_count += 1
             for key in ("h0", "h1", "cond"):
                 if key not in sample:
                     raise KeyError(f"Iterator sample missing required key '{key}'")
-                arrays[key].append(sample[key])
+                arrays[key].append(_ensure_leading_dim(sample[key]))
             for key in optional_keys:
                 value = sample.get(key)
-                if value is not None:
-                    optional[key].append(value)
-        stacked = {k: torch.cat([torch.as_tensor(v) for v in vals], dim=0) for k, vals in arrays.items()}
-        kwargs: dict[str, np.ndarray | Tensor] = {}
+                optional[key].append(
+                    None if value is None else _ensure_leading_dim(value)
+                )
+
+        if sample_count == 0:
+            raise ValueError("Iterator must yield at least one sample")
+
+        stacked = {k: torch.stack(vals, dim=0) for k, vals in arrays.items()}
+        kwargs: dict[str, Tensor] = {}
         for key, values in optional.items():
-            if values:
-                kwargs[key] = torch.cat([torch.as_tensor(v) for v in values], dim=0)
+            if all(value is None for value in values):
+                continue
+            if any(value is None for value in values):
+                raise ValueError(
+                    f"Optional key '{key}' missing for some samples"
+                )
+            tensors = [value for value in values if value is not None]
+            kwargs[key] = torch.stack(tensors, dim=0)
+
+        if stacked["h0"].shape != stacked["h1"].shape:
+            raise ValueError(
+                "Inconsistent shapes for 'h0' and 'h1' in iterator samples"
+            )
+        if stacked["h0"].shape[0] != stacked["cond"].shape[0]:
+            raise ValueError(
+                "Number of aggregated 'h0'/'h1' samples must match 'cond'"
+            )
+        for key, tensor in kwargs.items():
+            if tensor.shape[0] != stacked["h0"].shape[0]:
+                raise ValueError(
+                    f"Optional key '{key}' has mismatched sample dimension"
+                )
+
         return cls(stacked["h0"], stacked["h1"], stacked["cond"], **kwargs)
