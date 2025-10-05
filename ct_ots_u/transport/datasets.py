@@ -50,6 +50,34 @@ class TransportBatch:
                     kwargs[name] = value.to(device=device, dtype=dtype)
         return TransportBatch(**kwargs)  # type: ignore[arg-type]
 
+    @staticmethod
+    def collate(samples: list["TransportBatch"]) -> "TransportBatch":
+        """Stack a list of :class:`TransportBatch` objects along the batch axis."""
+
+        if not samples:
+            raise ValueError("TransportBatch.collate received an empty list")
+
+        def _stack(field: str) -> Optional[Tensor]:
+            values = [getattr(sample, field) for sample in samples]
+            present = [value is not None for value in values]
+            if any(present):
+                if not all(present):
+                    raise ValueError(
+                        f"Field '{field}' is inconsistently populated within the batch"
+                    )
+                tensors = [value for value in values if value is not None]
+                return torch.stack(tensors, dim=0)
+            return None
+
+        return TransportBatch(
+            h0=torch.stack([sample.h0 for sample in samples], dim=0),
+            h1=torch.stack([sample.h1 for sample in samples], dim=0),
+            cond=torch.stack([sample.cond for sample in samples], dim=0),
+            dose=_stack("dose"),
+            group=_stack("group"),
+            batch=_stack("batch"),
+        )
+
 
 class TransportDataset(Dataset[TransportBatch]):
     """Tensor dataset wrapping paired embeddings and conditioning vectors.
