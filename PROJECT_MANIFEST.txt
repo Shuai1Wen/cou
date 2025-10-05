@@ -1,0 +1,128 @@
+CT-OTS-U Clean Project Manifest
+================================
+Created: 2024-10-04
+Version: 1.0.0
+
+DIRECTORY STRUCTURE
+-------------------
+CT-OTS-U-Clean/
+├── ct_ots_u/                   [Core algorithm package]
+│   ├── config.py              [Configuration management]
+│   ├── ct_ots_model.py        [Semigroup model]
+│   ├── gating_kselect.py      [Gating selection]
+│   ├── rank_select.py         [Rank selection]
+│   ├── stability.py           [Stability projection]
+│   ├── data/                  [Data preprocessing]
+│   ├── eval/                  [Evaluation metrics]
+│   ├── gating/                [Gating algorithms]
+│   ├── model/                 [Training modules]
+│   ├── ot/                    [Optimal transport]
+│   ├── scripts/               [Internal scripts]
+│   └── utils/                 [Utility functions]
+│
+├── data/raw-use/              [Preprocessed datasets]
+│   ├── GSE160936/            [11 MB processed, 5.9 GB total]
+│   ├── GSE213516/            [1.7 GB]
+│   └── GSE157783/            [2.7 GB]
+│
+├── scripts/                   [User-facing scripts]
+│   ├── train_simple.py       [Simple training - beginner friendly]
+│   ├── train_quick.py        [Quick scenario switching]
+│   ├── run_full_pipeline.py  [Complete pipeline - RECOMMENDED]
+│   └── run_train_config.py   [Advanced configuration]
+│
+├── results/                   [Output directory - initially empty]
+├── resources/                 [External resources - initially empty]
+├── README.md                  [Complete usage documentation]
+└── requirements.txt           [Python dependencies]
+
+DATA SUMMARY
+------------
+Dataset          Cells    Genes  Donors/Samples  Size    Purpose
+------------------------------------------------------------------------
+GSE160936       29,188    3,000        24        5.9 GB  AD microglia (primary)
+GSE213516      130,581    3,000        33        1.7 GB  PBMC aging validation
+GSE157783        8,611    3,000        11        2.7 GB  PD cross-disease validation
+
+Total data size: ~10.3 GB
+
+SCRIPTS OVERVIEW
+----------------
+1. train_simple.py (6.0 KB)
+   - All parameters at top of file
+   - Best for beginners
+   - Quick edits and run
+
+2. train_quick.py (8.3 KB)
+   - 4 pre-configured scenarios
+   - One-line scenario switching
+   - Best for comparing approaches
+
+3. run_full_pipeline.py (15 KB) ⭐ RECOMMENDED
+   - Training + 7 analyses + report
+   - End-to-end workflow
+   - Best for complete experiments
+
+4. run_train_config.py (12 KB)
+   - Full parameter control
+   - Best for advanced users
+   - Ablation studies
+
+CORE FEATURES
+-------------
+✅ Unbalanced Optimal Transport (UOT)
+✅ Bayesian GMM gating with DP prior
+✅ Soft-hard stability constraints
+✅ Semigroup consistency guarantees
+✅ GPU auto-detection and fallback
+✅ 10 optimization techniques
+✅ Windows/Linux/Mac compatible
+
+SYSTEM REQUIREMENTS
+-------------------
+Python:     >= 3.11
+RAM:        >= 16 GB (32 GB recommended)
+Storage:    ~15 GB (data + code + results)
+GPU:        Optional (NVIDIA CUDA for 2-5x speedup)
+
+QUICK START
+-----------
+1. Install dependencies:
+   pip install -r requirements.txt
+
+2. Optional GPU support:
+   pip install torch geomloss pykeops
+
+3. Run simplest script:
+   python scripts/train_simple.py
+
+4. Or run complete pipeline:
+   python scripts/run_full_pipeline.py
+
+VERIFICATION CHECKLIST
+----------------------
+[✓] ct_ots_u package present
+[✓] 3 datasets present (GSE160936, GSE213516, GSE157783)
+[✓] 4 user scripts present
+[✓] README.md documentation
+[✓] requirements.txt dependencies
+[✓] No __pycache__ or temp files
+[✓] results/ directory ready for output
+
+PROJECT STATISTICS
+------------------
+Python files:     ~80 modules
+Total lines:      ~15,000 LOC
+Documentation:    ~1,500 lines
+Data files:       3 datasets (10.3 GB)
+Scripts:          4 user-facing
+Dependencies:     15 core packages
+
+NEXT STEPS
+----------
+1. Read README.md for detailed usage
+2. Check GPU availability: python -m ct_ots_u.utils.device_detect
+3. Run your first training with train_simple.py
+4. Explore results in results/ directory
+
+For questions, refer to README.md or check the issue tracker.
