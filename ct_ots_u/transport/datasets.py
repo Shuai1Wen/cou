@@ -154,56 +154,70 @@ class TransportDataset(Dataset[TransportBatch]):
 
         arrays: dict[str, list[Tensor]] = {"h0": [], "h1": [], "cond": []}
         optional_keys = {"dose", "group", "batch"}
-        optional: dict[str, list[Optional[Tensor]]] = {
-            key: [] for key in optional_keys
-        }
+        optional: dict[str, list[Tensor]] = {key: [] for key in optional_keys}
+        feature_shapes: dict[str, torch.Size] = {}
+        n_samples = 0
 
-        def _ensure_leading_dim(value: np.ndarray | Tensor) -> Tensor:
+        def _ensure_feature_tensor(value: np.ndarray | Tensor, key: str) -> Tensor:
+            tensor = torch.as_tensor(value)
+            if tensor.ndim == 1:
+                tensor = tensor.unsqueeze(0)
+            elif tensor.ndim == 2 and tensor.shape[0] == 1:
+                tensor = tensor.contiguous()
+            else:
+                raise ValueError(
+                    f"Iterator key '{key}' must provide a single sample with shape (feature_dim,)"
+                )
+            nonlocal feature_shapes
+            shape = tensor.shape[1:]
+            if key not in feature_shapes:
+                feature_shapes[key] = shape
+            elif feature_shapes[key] != shape:
+                raise ValueError(
+                    f"Inconsistent feature dimensions for '{key}': expected {feature_shapes[key]},"
+                    f" got {shape}"
+                )
+            return tensor.contiguous()
+
+        def _ensure_optional_tensor(value: np.ndarray | Tensor, key: str) -> Tensor:
             tensor = torch.as_tensor(value)
             if tensor.ndim == 0:
                 tensor = tensor.unsqueeze(0)
-            return tensor
+            elif tensor.ndim == 1:
+                tensor = tensor.contiguous()
+            elif tensor.ndim == 2 and tensor.shape[0] == 1:
+                tensor = tensor.reshape(-1)
+            else:
+                raise ValueError(
+                    f"Iterator key '{key}' must provide a single scalar per sample"
+                )
+            if tensor.numel() != 1:
+                raise ValueError(
+                    f"Iterator key '{key}' must provide exactly one value per sample"
+                )
+            return tensor.contiguous()
 
-        sample_count = 0
         for sample in iterator:
-            sample_count += 1
             for key in ("h0", "h1", "cond"):
                 if key not in sample:
                     raise KeyError(f"Iterator sample missing required key '{key}'")
-                arrays[key].append(_ensure_leading_dim(sample[key]))
+                arrays[key].append(_ensure_feature_tensor(sample[key], key))
             for key in optional_keys:
                 value = sample.get(key)
-                optional[key].append(
-                    None if value is None else _ensure_leading_dim(value)
-                )
+                if value is not None:
+                    optional[key].append(_ensure_optional_tensor(value, key))
+            n_samples += 1
 
-        if sample_count == 0:
+        if n_samples == 0:
             raise ValueError("Iterator must yield at least one sample")
 
-        stacked = {k: torch.stack(vals, dim=0) for k, vals in arrays.items()}
-        kwargs: dict[str, Tensor] = {}
+        stacked = {k: torch.cat(vals, dim=0) for k, vals in arrays.items()}
+        kwargs: dict[str, np.ndarray | Tensor] = {}
         for key, values in optional.items():
-            if all(value is None for value in values):
-                continue
-            if any(value is None for value in values):
-                raise ValueError(
-                    f"Optional key '{key}' missing for some samples"
-                )
-            tensors = [value for value in values if value is not None]
-            kwargs[key] = torch.stack(tensors, dim=0)
-
-        if stacked["h0"].shape != stacked["h1"].shape:
-            raise ValueError(
-                "Inconsistent shapes for 'h0' and 'h1' in iterator samples"
-            )
-        if stacked["h0"].shape[0] != stacked["cond"].shape[0]:
-            raise ValueError(
-                "Number of aggregated 'h0'/'h1' samples must match 'cond'"
-            )
-        for key, tensor in kwargs.items():
-            if tensor.shape[0] != stacked["h0"].shape[0]:
-                raise ValueError(
-                    f"Optional key '{key}' has mismatched sample dimension"
-                )
-
+            if values:
+                if len(values) != n_samples:
+                    raise ValueError(
+                        f"Optional key '{key}' present for {len(values)} samples; expected {n_samples}"
+                    )
+                kwargs[key] = torch.cat(values, dim=0)
         return cls(stacked["h0"], stacked["h1"], stacked["cond"], **kwargs)
