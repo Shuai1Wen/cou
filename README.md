@@ -10,12 +10,47 @@ CT-OTS-U 是一个用于推断单细胞RNA测序数据中细胞状态转换轨�
 
 ### 核心特性
 
-- **不平衡最优传输（UOT）**: 处理细胞增殖/凋亡导致的质量变化
+- **条件传输器（CRR / CFM-Lite）**：在固定嵌入空间内以监督回归的方式学习扰动映射，替代传统UOT，提升数值稳定性与工程可控性。
+- **不平衡最优传输（UOT）**: 可选的经典管线，处理细胞增殖/凋亡导致的质量变化
 - **门控多分支建模**: Bayesian GMM自适应发现细胞亚群分支
 - **稳定性保证**: 软-硬约束确保谱半径<1的数学性质
 - **半群一致性**: 保证时间可组合性（T_0→2 = T_1→2 ∘ T_0→1）
 - **GPU加速**: 自动检测GPU并启用加速（可选）
 - **10项优化**: BGMM门控、UOT平台、温度缩放、批效应决策等
+
+### 新增：条件残差传输器（CRR）与条件 Flow Matching（CFM-Lite）
+
+`ct_ots_u.transport` 和 `ct_ots_u.engine` 模块新增了两套轻量、可验证的监督式传输器：
+
+| 传输器 | 适用场景 | 训练目标 | 数值特性 |
+| --- | --- | --- | --- |
+| **CondResidualRegressor (CRR)** | 最小可行替换方案，关注短程扰动回归 | Huber/MSE 拟合扰动后嵌入 | 完全无 Sinkhorn，3 层 MLP + 谱归一化，极其稳定 |
+| **CondFlowField (CFM-Lite)** | 需要组合性 / 多剂量插值 | 条件向量场回归 (`v_θ(h_t, t)` 对齐 `h₁-h₀`) | 仅需 4-8 步 Euler 积分即可采样，可自然组合多个扰动 |
+
+配套的 `TransportTrainer` 封装了：
+
+- **Huber/MSE 主损失**：直接对嵌入空间进行回归，不依赖 UOT 或对偶变量；
+- **剂量单调惩罚**：对相同扰动组的高/低剂量输出做软约束，支持剂量顺序学习；
+- **同源一致惩罚**：可选的基因对一致性正则，兼容线性/冻结解码头；
+- **轻量 CORAL 对齐**：对 donor/batch 的一、二阶矩做对齐，提升跨域泛化；
+- **早停/梯度裁剪**：默认 30 epoch、5 次 patience、1.0 梯度裁剪，CPU 友好。
+
+使用示例：
+
+```python
+from ct_ots_u.transport import TransportDataset
+from ct_ots_u.engine import TransportConfig, TransportTrainer
+
+train_data = TransportDataset(h0_train, h1_train, cond_train, dose=dose, group=group, batch=batch)
+valid_data = TransportDataset(h0_valid, h1_valid, cond_valid, dose=dose_v, group=group_v, batch=batch_v)
+
+config = TransportConfig(model="crr", epochs=30, batch_size=4096, monotonic_weight=0.1, coral_weight=0.05)
+trainer = TransportTrainer(config, homolog_pairs=homolog_pairs, decoder=decoder_head)
+trainer.fit(train_data, valid=valid_data)
+pred_embeddings = trainer.predict(valid_data)
+```
+
+两种传输器共享 `TransportDataset` / `TransportTrainer` 接口，可通过修改 `TransportConfig.model` 在 CRR 与 CFM-Lite 间无缝切换，并保留原有评测管线（E-distance、MMD、跨 donor 切分等）。
 
 ---
 
