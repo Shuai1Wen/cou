@@ -6,19 +6,43 @@
 
 ## 项目简介
 
-CT-OTS-U 是一个用于推断单细胞RNA测序数据中细胞状态转换轨迹的算法。基于不平衡最优传输（UOT）和门控多分支建模，能够处理细胞增殖/凋亡过程，并保证数学稳定性和时间可组合性。
+CT-OTS-U 是一个用于推断单细胞RNA测序数据中细胞状态转换轨迹的算法。最新版本在保留门控多分支建模的同时，引入了**结构化稳定动力学**与**无最优传输（non-OT）的跨域对齐**，用工程上可控的方式替代“先学习后投影”的不稳定方案。
 
 ### 核心特性
 
-- **条件传输器（CRR / CFM-Lite）**：在固定嵌入空间内以监督回归的方式学习扰动映射，替代传统UOT，提升数值稳定性与工程可控性。
-- **不平衡最优传输（UOT）**: 可选的经典管线，处理细胞增殖/凋亡导致的质量变化
-- **门控多分支建模**: Bayesian GMM自适应发现细胞亚群分支
-- **稳定性保证**: 软-硬约束确保谱半径<1的数学性质
-- **半群一致性**: 保证时间可组合性（T_0→2 = T_1→2 ∘ T_0→1）
-- **GPU加速**: 自动检测GPU并启用加速（可选）
-- **10项优化**: BGMM门控、UOT平台、温度缩放、批效应决策等
+- **结构化稳定动力学（DampedSkew / OrthogonalStep）**：直接在参数化上嵌入反对称+阻尼或近正交收缩结构，天生满足 Hurwitz 条件，无需后验谱投影。
+- **Lyapunov + Lipschitz 正则**：以能量函数和谱范数软约束进一步钉住稳定域，训练过程中不再出现梯度爆炸/NaN。
+- **非 OT 对齐（SWD / MMD / CORAL / DANN）**：在潜在空间内进行轻量对齐，避免 Sinkhorn 对偶造成的数值灾难，默认采用切片 Wasserstein（SWD）。
+- **条件传输器（CRR / CFM-Lite）**：在固定嵌入空间内以监督回归的方式学习扰动映射，可与新的稳定动力学组合使用。
+- **门控多分支建模**: Bayesian GMM 自适应发现细胞亚群分支。
+- **半群一致性**: 保证时间可组合性（T_0→2 = T_1→2 ∘ T_0→1）。
+- **GPU 加速**: 自动检测 GPU 并启用加速（可选）。
 
-### 新增：条件残差传输器（CRR）与条件 Flow Matching（CFM-Lite）
+### 新增：结构化稳定动力学 + Non-OT 对齐
+
+`ct_ots_u.model` 模块新增两部分能力：
+
+#### 1. 稳定线性生成元
+
+| 模块 | 核心结构 | 数值特性 | 适用场景 |
+| --- | --- | --- | --- |
+| **DampedSkewLinear** | A = (W − Wᵀ) − γI，反对称 + 阻尼 | 谱实部≤−γ，默认离散 Euler 步长即稳定 | 绝大多数离散动力学、快速验证 |
+| **OrthogonalStep** | Cayley 近似正交 + Sigmoid 收缩 ρ | 保范映射并可调收缩半径 | 需要范数保持或更强收缩约束 |
+
+两者可在 `ct_ots_u/config.py` 中通过 `dynamics.backend` 字段切换，`gamma / rho / dt` 控制阻尼和步长。配套的 `regular.lyapunov_*`、`regular.lipschitz_*` 参数默认开启，直接提供 Lyapunov 能量约束和谱范数软惩罚。
+
+#### 2. 非 OT 域对齐
+
+| Loss | 描述 | 适用场景 |
+| --- | --- | --- |
+| **SWDLoss** | 正交切片 Wasserstein，排序后 Lᵖ 距离平均 | 默认选项，低方差、易调参 |
+| **MMDLoss** | 多核 RBF 最大均值差异 | 需要可解释统计对齐时 |
+| **CORALLoss** | 对齐均值+协方差（可选收缩） | 数据量较大、关注二阶统计时 |
+| **DANNLoss** | 梯度反转 + 域判别器 | 需要对域标签不可区分的表示 |
+
+所有 Loss 都在潜在空间做白化后对齐，不依赖 Sinkhorn 或对偶变量，通过 `align.method` 和 `align.weight` 调度，详见下文配置章节。
+
+### 条件残差传输器（CRR）与条件 Flow Matching（CFM-Lite）
 
 `ct_ots_u.transport` 和 `ct_ots_u.engine` 模块新增了两套轻量、可验证的监督式传输器：
 
@@ -322,6 +346,25 @@ TRAIN_CONFIG = {
     # ... 更多参数
 }
 ```
+
+#### 关键配置：稳定动力学与对齐
+
+`ct_ots_u/config.py` 暴露了新的稳定动力学与非 OT 对齐参数，可在脚本或 YAML/JSON 配置中覆盖：
+
+```python
+from ct_ots_u.config import CTOTSUConfig, DynamicsCfg, RegularCfg, AlignCfg
+
+cfg = CTOTSUConfig()
+cfg.dynamics = DynamicsCfg(backend='damped_skew', gamma=0.2, dt=0.5)
+cfg.regular = RegularCfg(lyapunov_lambda=1.5, lipschitz_target=0.8)
+cfg.align = AlignCfg(method='swd', weight=0.3, num_projections=256)
+```
+
+- **dynamics.backend** 支持 `"damped_skew"`（默认）与 `"orthogonal"`；
+- **regular.lyapunov_lambda / lipschitz_lambda** 控制 Lyapunov 和 Lipschitz 惩罚强度；
+- **align.method** 在 `"swd"`, `"mmd"`, `"coral"`, `"dann"` 间切换，可调整 `weight` 与对应超参。
+
+若希望完全关闭跨域对齐，将 `align.method="none"` 或 `align.weight=0.0` 即可。
 
 ---
 
