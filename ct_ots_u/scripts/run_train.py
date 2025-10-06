@@ -429,6 +429,9 @@ def _train_branch_generators(
         sinkhorn_scaling=config.uot.sinkhorn_scaling,
         sinkhorn_minibatch=sinkhorn_minibatch,
         sinkhorn_batch_size=sinkhorn_batch_size,
+        dynamics_cfg=config.dynamics,
+        regular_cfg=config.regular,
+        align_cfg=config.align,
     )
 
     if r_pick is None:
@@ -465,6 +468,9 @@ def _train_branch_generators(
         log_diagnostics=config.stable.log_raw_stability,
         sinkhorn_minibatch=sinkhorn_minibatch,
         sinkhorn_batch_size=sinkhorn_batch_size,
+        dynamics_cfg=config.dynamics,
+        regular_cfg=config.regular,
+        align_cfg=config.align,
     ).fit_branchwise(
         splits.X0,
         splits.Xt1,
