@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Tuple
+from typing import Literal, Tuple
 
 # Environment variable defaults
 CT_OTS_TAU_DEFAULT = float(os.environ.get('CT_OTS_TAU', '0.5'))
@@ -55,16 +55,54 @@ class RankCfg:
 
 
 @dataclass
+class DynamicsCfg:
+    """Structured dynamics configuration."""
+
+    backend: Literal["damped_skew", "orthogonal"] = "damped_skew"
+    gamma: float = 0.1
+    rho: float = 0.99
+    dt: float = 1.0
+    discrete: bool = True
+
+
+@dataclass
+class RegularCfg:
+    """Regularisation configuration for stable dynamics."""
+
+    lyapunov_alpha: float = 0.05
+    lyapunov_lambda: float = 1.0
+    lipschitz_enable: bool = True
+    lipschitz_target: float = 1.0
+    lipschitz_lambda: float = 0.1
+
+
+@dataclass
+class AlignCfg:
+    """Domain alignment configuration."""
+
+    method: Literal["none", "swd", "mmd", "coral", "dann"] = "swd"
+    weight: float = 0.5
+    num_projections: int = 128
+    sliced_p: int = 2
+    orthogonal_projections: bool = True
+    mmd_bandwidths: Tuple[float, ...] = (0.5, 1.0, 2.0)
+    coral_shrinkage: float = 1e-3
+    dann_hidden: int = 128
+    dann_lambda: float = 1.0
+
+
+@dataclass
 class StableCfg:
-    """Stability projection configuration."""
-    alpha: float = 1e-3                 # 谱投影最小衰减
-    max_spectral_margin: float = -1e-3  # Strict negative margin for stability
-    lambda_: float = 1.0                # Stability penalty weight (hard projection)
-    lambda_soft: float = 0.5            # Soft penalty weight (quadratic)
-    soft_weight: float = 0.5            # Blend between raw and projected
-    log_raw_stability: bool = True      # Record raw/projection stability metrics
-    eval_disable_projection: bool = False  # Disable projections during evaluation
-    use_soft_penalty: bool = True       # Use quadratic soft penalty during training
+    """Legacy stability configuration (kept for backwards compatibility)."""
+
+    alpha: float = 1e-3
+    max_spectral_margin: float = -1e-3
+    lambda_: float = 1.0
+    lambda_soft: float = 0.5
+    soft_weight: float = 0.5
+    log_raw_stability: bool = True
+    eval_disable_projection: bool = False
+    use_soft_penalty: bool = True
 
 
 @dataclass
@@ -142,6 +180,9 @@ class CTOTSUConfig:
     gate: GateCfg = field(default_factory=GateCfg)
     rank: RankCfg = field(default_factory=RankCfg)
     stable: StableCfg = field(default_factory=StableCfg)
+    dynamics: DynamicsCfg = field(default_factory=DynamicsCfg)
+    regular: RegularCfg = field(default_factory=RegularCfg)
+    align: AlignCfg = field(default_factory=AlignCfg)
     eval_tol: EvalTol = field(default_factory=EvalTol)
     data: DataCfg = field(default_factory=DataCfg)
     train: TrainCfg = field(default_factory=TrainCfg)
@@ -223,6 +264,31 @@ class CTOTSUConfig:
                 "log_raw_stability": self.stable.log_raw_stability,
                 "eval_disable_projection": self.stable.eval_disable_projection,
                 "use_soft_penalty": self.stable.use_soft_penalty,
+            },
+            "dynamics": {
+                "backend": self.dynamics.backend,
+                "gamma": self.dynamics.gamma,
+                "rho": self.dynamics.rho,
+                "dt": self.dynamics.dt,
+                "discrete": self.dynamics.discrete,
+            },
+            "regular": {
+                "lyapunov_alpha": self.regular.lyapunov_alpha,
+                "lyapunov_lambda": self.regular.lyapunov_lambda,
+                "lipschitz_enable": self.regular.lipschitz_enable,
+                "lipschitz_target": self.regular.lipschitz_target,
+                "lipschitz_lambda": self.regular.lipschitz_lambda,
+            },
+            "align": {
+                "method": self.align.method,
+                "weight": self.align.weight,
+                "num_projections": self.align.num_projections,
+                "sliced_p": self.align.sliced_p,
+                "orthogonal_projections": self.align.orthogonal_projections,
+                "mmd_bandwidths": self.align.mmd_bandwidths,
+                "coral_shrinkage": self.align.coral_shrinkage,
+                "dann_hidden": self.align.dann_hidden,
+                "dann_lambda": self.align.dann_lambda,
             },
             "eval_tol": {
                 "semigroup_improve_min": self.eval_tol.semigroup_improve_min,

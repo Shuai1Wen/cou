@@ -145,8 +145,14 @@ def train_with_documented_algorithm(h5ad_path: str, config: CTOTSUConfig,
             steps=100,  # Fewer steps for demo
             lr=1e-2,
             alpha=config.stable.alpha,
-            seed=config.seed + k  # Different seed per branch
+            seed=config.seed + k,  # Different seed per branch
+            dynamics_cfg=config.dynamics,
+            regular_cfg=config.regular,
+            align_cfg=config.align,
         )
+
+        if isinstance(L_k, tuple):
+            L_k = L_k[0]
 
         generators.append(L_k)
 

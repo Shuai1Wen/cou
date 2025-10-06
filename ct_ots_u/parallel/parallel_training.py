@@ -12,6 +12,7 @@ from typing import List, Optional, Tuple, Dict, Any
 
 import numpy as np
 
+from ..config import AlignCfg, DynamicsCfg, RegularCfg
 from ..model.train import fit_branch_generator
 
 Array = np.ndarray
@@ -95,7 +96,25 @@ def _train_single_branch(args_tuple: Tuple) -> Tuple[int, Optional[Array], float
                 'reason': f'Insufficient memory: {required_memory:.2f}GB required'
             }
 
+        from ..config import AlignCfg, DynamicsCfg, RegularCfg
+
         # Train generator
+        dyn_cfg = config.get('dynamics_cfg')
+        if isinstance(dyn_cfg, dict):
+            dyn_cfg = DynamicsCfg(**dyn_cfg)
+        elif dyn_cfg is None:
+            dyn_cfg = DynamicsCfg()
+        reg_cfg = config.get('regular_cfg')
+        if isinstance(reg_cfg, dict):
+            reg_cfg = RegularCfg(**reg_cfg)
+        elif reg_cfg is None:
+            reg_cfg = RegularCfg()
+        align_cfg = config.get('align_cfg')
+        if isinstance(align_cfg, dict):
+            align_cfg = AlignCfg(**align_cfg)
+        elif align_cfg is None:
+            align_cfg = AlignCfg()
+
         L_branch = fit_branch_generator(
             Xs, Xt_branch,
             tau=config.get('tau', 0.5),
@@ -105,7 +124,10 @@ def _train_single_branch(args_tuple: Tuple) -> Tuple[int, Optional[Array], float
             alpha=config.get('alpha', 1e-3),
             seed=config.get('seed', 0) + branch_id,
             use_torch=config.get('use_torch', None),
-            device=config.get('device', 'cpu')
+            device=config.get('device', 'cpu'),
+            dynamics_cfg=dyn_cfg,
+            regular_cfg=reg_cfg,
+            align_cfg=align_cfg,
         )
 
         # Compute final loss

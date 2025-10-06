@@ -8,6 +8,7 @@ from typing import Dict, List
 
 import numpy as np
 
+from .config import AlignCfg, DynamicsCfg, RegularCfg
 from .model.semigroup import pushforward
 from .model.train import fit_branch_generator
 from .stability import stability_penalty
@@ -68,6 +69,9 @@ class GatedSemigroup:
         log_diagnostics: bool = True,
         sinkhorn_minibatch: bool = False,
         sinkhorn_batch_size: int | None = None,
+        dynamics_cfg: DynamicsCfg | None = None,
+        regular_cfg: RegularCfg | None = None,
+        align_cfg: AlignCfg | None = None,
     ) -> None:
         self.K = K
         self.rank = rank
@@ -99,6 +103,13 @@ class GatedSemigroup:
         self.log_diagnostics = log_diagnostics
         self.sinkhorn_minibatch = sinkhorn_minibatch
         self.sinkhorn_batch_size = sinkhorn_batch_size
+
+        self.dynamics_cfg = dynamics_cfg or DynamicsCfg()
+        self.regular_cfg = regular_cfg or RegularCfg(
+            lyapunov_alpha=stable_alpha,
+            lyapunov_lambda=stable_lambda,
+        )
+        self.align_cfg = align_cfg or AlignCfg()
 
         self.gating_model = None
         self.L_list: List[np.ndarray] = []
@@ -192,6 +203,9 @@ class GatedSemigroup:
                 sinkhorn_scaling=self.sinkhorn_scaling,
                 sinkhorn_minibatch=self.sinkhorn_minibatch,
                 sinkhorn_batch_size=self.sinkhorn_batch_size,
+                dynamics_cfg=self.dynamics_cfg,
+                regular_cfg=self.regular_cfg,
+                align_cfg=self.align_cfg,
             )
 
             if isinstance(result, tuple):
@@ -280,35 +294,38 @@ def semigroup_consistency(
         stop_thr=model.stop_thr,
     )
 
-    direct_model = GatedSemigroup(
-        K=model.K,
-        rank=model.rank,
-        reg=model.reg,
-        reg_m=model.reg_m,
-        stable_margin=None if eval_disable_projection else model.stable_margin,
-        stable_alpha=model.stable_alpha,
-        stable_lambda=model.stable_lambda,
-        stable_soft_weight=model.stable_soft_weight,
-        stable_use_soft_penalty=model.stable_use_soft_penalty,
-        stable_lambda_soft=model.stable_lambda_soft,
-        use_swa=model.use_swa,
-        swa_start_ratio=model.swa_start_ratio,
-        swa_lr=model.swa_lr,
-        swa_schedule=model.swa_schedule,
-        ot_backend=model.ot_backend,
-        sinkhorn_backend=model.sinkhorn_backend,
-        sinkhorn_scaling=model.sinkhorn_scaling,
-        min_branch_samples=model.min_branch_samples,
-        tau=model.tau,
-        num_iter_max=model.num_iter_max,
-        stop_thr=model.stop_thr,
-        train_steps=model.train_steps,
-        train_lr=model.train_lr,
-        reg_nuc=model.reg_nuc,
-        use_torch=model.use_torch,
-        device=model.device,
-        log_diagnostics=model.log_diagnostics,
-    )
+        direct_model = GatedSemigroup(
+            K=model.K,
+            rank=model.rank,
+            reg=model.reg,
+            reg_m=model.reg_m,
+            stable_margin=None if eval_disable_projection else model.stable_margin,
+            stable_alpha=model.stable_alpha,
+            stable_lambda=model.stable_lambda,
+            stable_soft_weight=model.stable_soft_weight,
+            stable_use_soft_penalty=model.stable_use_soft_penalty,
+            stable_lambda_soft=model.stable_lambda_soft,
+            use_swa=model.use_swa,
+            swa_start_ratio=model.swa_start_ratio,
+            swa_lr=model.swa_lr,
+            swa_schedule=model.swa_schedule,
+            ot_backend=model.ot_backend,
+            sinkhorn_backend=model.sinkhorn_backend,
+            sinkhorn_scaling=model.sinkhorn_scaling,
+            min_branch_samples=model.min_branch_samples,
+            tau=model.tau,
+            num_iter_max=model.num_iter_max,
+            stop_thr=model.stop_thr,
+            train_steps=model.train_steps,
+            train_lr=model.train_lr,
+            reg_nuc=model.reg_nuc,
+            use_torch=model.use_torch,
+            device=model.device,
+            log_diagnostics=model.log_diagnostics,
+            dynamics_cfg=model.dynamics_cfg,
+            regular_cfg=model.regular_cfg,
+            align_cfg=model.align_cfg,
+        )
     direct_model.gating_model = model.gating_model
     direct_model.fit_pair(X0, Xt12)
     direct_pred = direct_model.forward(X0, delta=1.0)
