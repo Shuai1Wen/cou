@@ -1,0 +1,80 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env
+.conda/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Type checkers / linters
+.mypy_cache/
+.pyre/
+.pytype/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS / misc
+.DS_Store
+Thumbs.db
+
+# Project-specific outputs
+results/
+logs/
+reports/
+
+# Data (do not ignore if you version small metadata; adjust as needed)
+# Large raw/processed datasets should not be committed
+# Uncomment if you don't intend to version data
+# data/
+# data/raw/
+# data/processed/
+
+# Temporary files
+*.tmp
+*.log
+*.bak
