@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """CT-OTS gated semigroup model."""
 
 from __future__ import annotations

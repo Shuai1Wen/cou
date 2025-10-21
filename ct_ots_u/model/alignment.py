@@ -52,6 +52,12 @@ class SWDLoss(AlignLoss):
         return dirs
 
     def forward(self, z_s: Tensor, z_t: Tensor) -> Tensor:
+        if z_s.ndim != 2 or z_t.ndim != 2:
+            raise ValueError(f"z_s and z_t must be 2D, got {tuple(z_s.shape)} and {tuple(z_t.shape)}")
+        if z_s.shape[1] != z_t.shape[1]:
+            raise ValueError(f"Feature dimensions must match, got {z_s.shape[1]} and {z_t.shape[1]}")
+        if z_s.shape[0] == 0 or z_t.shape[0] == 0:
+            return z_s.new_tensor(0.0)
         z_s = _whiten(z_s)
         z_t = _whiten(z_t)
         dirs = self._sample_dirs(z_s.shape[1], z_s.device, z_s.dtype)
@@ -74,6 +80,12 @@ class MMDLoss(AlignLoss):
         return torch.exp(-dist2 / (2.0 * sigma**2))
 
     def forward(self, z_s: Tensor, z_t: Tensor) -> Tensor:
+        if z_s.ndim != 2 or z_t.ndim != 2:
+            raise ValueError(f"z_s and z_t must be 2D, got {tuple(z_s.shape)} and {tuple(z_t.shape)}")
+        if z_s.shape[1] != z_t.shape[1]:
+            raise ValueError(f"Feature dimensions must match, got {z_s.shape[1]} and {z_t.shape[1]}")
+        if z_s.shape[0] == 0 or z_t.shape[0] == 0:
+            return z_s.new_tensor(0.0)
         z_s = _whiten(z_s)
         z_t = _whiten(z_t)
         mmd = z_s.new_tensor(0.0)
@@ -100,6 +112,12 @@ class CORALLoss(AlignLoss):
         return (1 - self.shrinkage) * c + self.shrinkage * eye
 
     def forward(self, z_s: Tensor, z_t: Tensor) -> Tensor:
+        if z_s.ndim != 2 or z_t.ndim != 2:
+            raise ValueError(f"z_s and z_t must be 2D, got {tuple(z_s.shape)} and {tuple(z_t.shape)}")
+        if z_s.shape[1] != z_t.shape[1]:
+            raise ValueError(f"Feature dimensions must match, got {z_s.shape[1]} and {z_t.shape[1]}")
+        if z_s.shape[0] == 0 or z_t.shape[0] == 0:
+            return z_s.new_tensor(0.0)
         cov_s = self._cov(z_s)
         cov_t = self._cov(z_t)
         diff = cov_s - cov_t
@@ -141,6 +159,12 @@ class DANNLoss(AlignLoss):
         self.bce = nn.BCEWithLogitsLoss()
 
     def forward(self, z_s: Tensor, z_t: Tensor) -> Tensor:
+        if z_s.ndim != 2 or z_t.ndim != 2:
+            raise ValueError(f"z_s and z_t must be 2D, got {tuple(z_s.shape)} and {tuple(z_t.shape)}")
+        if z_s.shape[1] != z_t.shape[1]:
+            raise ValueError(f"Feature dimensions must match, got {z_s.shape[1]} and {z_t.shape[1]}")
+        if z_s.shape[0] == 0 or z_t.shape[0] == 0:
+            return z_s.new_tensor(0.0)
         z_s = _GradReverse.apply(_whiten(z_s), self.lambd)
         z_t = _GradReverse.apply(_whiten(z_t), self.lambd)
         logits_s = self.disc(z_s)
