@@ -32,6 +32,8 @@ def spectral_abscissa(L: np.ndarray) -> float:
 def mu2_log_norm(L: np.ndarray) -> float:
     if L.size == 0:
         return 0.0
+    if L.ndim != 2 or L.shape[0] != L.shape[1]:
+        raise ValueError(f"Expected square matrix, got shape {L.shape}")
     S = 0.5 * (L + L.T)
     eigvals = np.linalg.eigvalsh(S)
     if eigvals.size == 0:
@@ -117,7 +119,8 @@ def soft_stability_penalty(
 
     Args:
         L: Generator matrix
-        alpha: Stability margin (negative, e.g., -1e-3)
+        alpha: Stability margin threshold (positive, e.g., 1e-3).
+               Penalizes when mu2 > -alpha (i.e., when mu2 + alpha > 0)
         lambda_stab: Penalty weight
 
     Returns:
@@ -125,9 +128,11 @@ def soft_stability_penalty(
     """
     if L.size == 0:
         return 0.0
+    if L.ndim != 2 or L.shape[0] != L.shape[1]:
+        raise ValueError(f"Expected square matrix, got shape {L.shape}")
 
     mu2 = mu2_log_norm(L)
-    violation = max(0.0, mu2 + abs(alpha))  # mu2 should be <= -alpha
+    violation = max(0.0, mu2 + alpha)  # mu2 should be <= -alpha
     penalty = lambda_stab * (violation ** 2)
     return float(penalty)
 

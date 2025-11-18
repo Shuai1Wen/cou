@@ -77,14 +77,12 @@ def spectral_radius(L: Array) -> float:
     Returns
     -------
     radius : float
-        Maximum real eigenvalue of (L + L^T)/2
+        Maximum eigenvalue of (L + L^T)/2
     """
     S = 0.5 * (L + L.T)
-    eigenvals = np.linalg.eigvals(S)
-    max_real = float(np.max(np.real(eigenvals)))
-    if max_real > 0:
-        return max_real * 0.5
-    return max_real
+    # Use eigvalsh for symmetric matrices (more efficient and stable)
+    eigenvals = np.linalg.eigvalsh(S)
+    return float(np.max(eigenvals))
 
 
 __all__ = ["project_stable", "pushforward", "spectral_radius"]
