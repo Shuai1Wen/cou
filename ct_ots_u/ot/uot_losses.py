@@ -175,33 +175,34 @@ def sinkhorn_divergence(
             )
 
     # POT fallback with stabilised solver
+    if x.shape[0] == 0 or y.shape[0] == 0:
+        raise ValueError("Input arrays cannot be empty")
+
     a = np.ones(x.shape[0]) / x.shape[0]
     b = np.ones(y.shape[0]) / y.shape[0]
+
+    # Compute all three cost matrices
     M_xy = ot.dist(x, y, metric='sqeuclidean')
-    scale = float(M_xy.max())
+    M_xx = ot.dist(x, x, metric='sqeuclidean')
+    M_yy = ot.dist(y, y, metric='sqeuclidean')
+
+    # Use consistent scaling across all three matrices for proper debiasing
+    scale = float(max(M_xy.max(), M_xx.max(), M_yy.max()))
     if scale > 0:
         M_xy = M_xy / scale
+        M_xx = M_xx / scale
+        M_yy = M_yy / scale
 
     try:
         G_xy = ot.sinkhorn_stabilized(a, b, M_xy, reg=blur, numItermax=num_iter_max, stopThr=stop_thr)
-    except AttributeError:  # pragma: no cover - compatibility
-        G_xy = ot.sinkhorn(a, b, M_xy, reg=blur, numItermax=num_iter_max, stopThr=stop_thr)
-    cost_xy = float(np.sum(G_xy * M_xy))
-
-    M_xx = ot.dist(x, x, metric='sqeuclidean')
-    M_yy = ot.dist(y, y, metric='sqeuclidean')
-    if M_xx.max() > 0:
-        M_xx = M_xx / M_xx.max()
-    if M_yy.max() > 0:
-        M_yy = M_yy / M_yy.max()
-
-    try:
         G_xx = ot.sinkhorn_stabilized(a, a, M_xx, reg=blur, numItermax=num_iter_max, stopThr=stop_thr)
         G_yy = ot.sinkhorn_stabilized(b, b, M_yy, reg=blur, numItermax=num_iter_max, stopThr=stop_thr)
-    except AttributeError:  # pragma: no cover
+    except AttributeError:  # pragma: no cover - compatibility
+        G_xy = ot.sinkhorn(a, b, M_xy, reg=blur, numItermax=num_iter_max, stopThr=stop_thr)
         G_xx = ot.sinkhorn(a, a, M_xx, reg=blur, numItermax=num_iter_max, stopThr=stop_thr)
         G_yy = ot.sinkhorn(b, b, M_yy, reg=blur, numItermax=num_iter_max, stopThr=stop_thr)
 
+    cost_xy = float(np.sum(G_xy * M_xy))
     cost_xx = float(np.sum(G_xx * M_xx))
     cost_yy = float(np.sum(G_yy * M_yy))
     return cost_xy - 0.5 * (cost_xx + cost_yy)
@@ -256,6 +257,9 @@ def uot_sinkhorn_cost(
                     f"GeomLoss backend unavailable; falling back to POT Sinkhorn ({exc!r})",
                     RuntimeWarning,
                 )
+
+    if x.shape[0] == 0 or y.shape[0] == 0:
+        raise ValueError("Input arrays cannot be empty")
 
     a = np.ones(x.shape[0]) / x.shape[0]
     b = np.ones(y.shape[0]) / y.shape[0]

@@ -71,7 +71,7 @@ class OrthogonalStep(nn.Module):
     def step(self, z: Tensor, *, dt: Optional[float] = None) -> Tensor:
         del dt  # intentionally unused; kept for signature symmetry
         Q = self._cayley()
-        rho = torch.sigmoid(self.log_rho)
+        rho = torch.exp(self.log_rho).clamp(max=1.0)
         return rho * (z @ Q.transpose(-1, -2))
 
 

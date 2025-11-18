@@ -65,14 +65,32 @@ class SWDLoss(AlignLoss):
         proj_t = z_t @ dirs
         proj_s, _ = proj_s.sort(dim=0)
         proj_t, _ = proj_t.sort(dim=0)
+
+        # Handle different sample sizes via interpolation
+        n_s, n_t = proj_s.shape[0], proj_t.shape[0]
+        if n_s != n_t:
+            # Use linear interpolation to match sizes
+            min_size = min(n_s, n_t)
+            if n_s > n_t:
+                indices = torch.linspace(0, n_s - 1, n_t, device=proj_s.device).long()
+                proj_s = proj_s[indices]
+            else:
+                indices = torch.linspace(0, n_t - 1, n_s, device=proj_t.device).long()
+                proj_t = proj_t[indices]
+
         diff = (proj_s - proj_t).abs().pow(self.p)
         return diff.mean()
 
 
 class MMDLoss(AlignLoss):
-    def __init__(self, bandwidths: Sequence[float] = (0.5, 1.0, 2.0)) -> None:
+    def __init__(
+        self,
+        bandwidths: Sequence[float] = (0.5, 1.0, 2.0),
+        max_samples: int = 2000,
+    ) -> None:
         super().__init__()
         self.bandwidths = tuple(float(b) for b in bandwidths)
+        self.max_samples = int(max_samples)
 
     def _gaussian(self, x: Tensor, y: Tensor, sigma: float) -> Tensor:
         diff = x.unsqueeze(1) - y.unsqueeze(0)
@@ -86,6 +104,15 @@ class MMDLoss(AlignLoss):
             raise ValueError(f"Feature dimensions must match, got {z_s.shape[1]} and {z_t.shape[1]}")
         if z_s.shape[0] == 0 or z_t.shape[0] == 0:
             return z_s.new_tensor(0.0)
+
+        # Subsample if datasets are too large to avoid memory issues
+        if z_s.shape[0] > self.max_samples:
+            idx_s = torch.randperm(z_s.shape[0], device=z_s.device)[: self.max_samples]
+            z_s = z_s[idx_s]
+        if z_t.shape[0] > self.max_samples:
+            idx_t = torch.randperm(z_t.shape[0], device=z_t.device)[: self.max_samples]
+            z_t = z_t[idx_t]
+
         z_s = _whiten(z_s)
         z_t = _whiten(z_t)
         mmd = z_s.new_tensor(0.0)

@@ -78,7 +78,7 @@ def _export_matrix(dynamics: nn.Module) -> Tensor:
         return dynamics.A()
     if isinstance(dynamics, OrthogonalStep):
         Q = dynamics._cayley()  # type: ignore[attr-defined]
-        rho = torch.sigmoid(dynamics.log_rho)
+        rho = torch.exp(dynamics.log_rho).clamp(max=1.0)
         return rho * Q
     raise TypeError(f"Unsupported dynamics module {type(dynamics)!r}")
 
@@ -136,7 +136,12 @@ def _train_dynamics(
     best_state = {k: v.detach().clone() for k, v in dynamics.state_dict().items()}
     best_diag = _TrainDiagnostics(0.0, 0.0, 0.0, 0.0, 0.0)
 
-    for _ in range(steps):
+    # Early stopping parameters
+    patience = max(20, steps // 10)  # 10% of total steps or at least 20
+    no_improve_count = 0
+    min_delta = 1e-6  # Minimum improvement threshold
+
+    for step_idx in range(steps):
         optimizer.zero_grad()
 
         pred = dynamics.step(src)
@@ -163,7 +168,7 @@ def _train_dynamics(
         optimizer.step()
 
         current = total_loss.detach().item()
-        if current < best_loss:
+        if current < best_loss - min_delta:
             best_loss = current
             best_state = {k: v.detach().clone() for k, v in dynamics.state_dict().items()}
             best_diag = _TrainDiagnostics(
@@ -173,6 +178,13 @@ def _train_dynamics(
                 lyapunov=lyap_loss.detach().item(),
                 lipschitz=lip_loss.detach().item(),
             )
+            no_improve_count = 0
+        else:
+            no_improve_count += 1
+
+        # Early stopping if no improvement for patience steps
+        if no_improve_count >= patience:
+            break
 
     dynamics.load_state_dict(best_state)
     matrix = _export_matrix(dynamics).detach().cpu().numpy()
